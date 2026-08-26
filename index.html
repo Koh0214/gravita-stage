@@ -26469,7 +26469,8 @@ function makePost(renderer, scene, camera) {
       contrast: { value: 0.80 },
       useBloom: { value: 1.0 },
       dazzle: { value: 0.0 },
-      speedLines: { value: 0.0 }
+      speedLines: { value: 0.0 },
+      focusUV: { value: new T.Vector2(0.5, 0.5) }
     },
     vertexShader: 'varying vec2 vUv; void main(){ vUv=uv; gl_Position=vec4(position.xy,0.0,1.0); }',
     fragmentShader: [
@@ -26479,23 +26480,33 @@ function makePost(renderer, scene, camera) {
       'uniform vec2 texel, gTexel;',
       'uniform vec3 inkColor, hazeColor, rimColor;',
       'uniform float outlineW, normalEdge, depthEdge, bloomAmt, vignette, hazeStart, hazeEnd, grade, useBloom, dazzle, speedLines, aoAmt;',
+      'uniform vec2 focusUV;',
       'uniform float exposure, sat, contrast, hazeAmt;',
       'varying vec2 vUv;',
       'float viewZ(vec4 g){ float d = unpackD(g.zw); return 60.0*d/max(1e-4, 1.0-d); }',
       'void main(){',
       '  vec3 col = texture2D(tScene, vUv).rgb;',
-      '  vec2 rd = vUv - 0.5;',
+      '  vec2 rvec = vUv - focusUV;',
+      /* focusUV is the on-screen vanishing point of the travel direction: near
+         the centre when flying toward where the camera looks (classic radial
+         speed lines), pushed off past the edge — effectively to infinity —
+         when travel is broadside to the camera, at which point rdir stops
+         varying across the screen and the lines go parallel with no visible
+         centre. */
+      '  float rlen = length(rvec);',
+      '  vec2 rdir = rlen > 1e-5 ? rvec / rlen : vec2(1.0, 0.0);',
       '  if (speedLines > 0.004) {',
+      '    vec2 rd = rdir * min(rlen, 0.78);',
       '    vec3 rb = vec3(0.0);',
       '    for (int i = 1; i <= 6; i++) {',
       '      float tt = float(i)/6.0;',
       '      rb += texture2D(tScene, vUv - rd*tt*0.115*speedLines).rgb;',
       '    }',
       '    col = mix(col, rb/6.0, clamp(speedLines,0.0,1.0)*0.72);',
-      '    float ang = atan(rd.y, rd.x);',
+      '    float ang = atan(rdir.y, rdir.x);',
       '    float nz = fract(sin(ang*97.13)*43758.5453);',
       '    float streak = smoothstep(0.90, 1.0, fract(nz*3.0 + ang*2.0));',
-      '    float rr = smoothstep(0.16, 0.52, length(rd));',
+      '    float rr = smoothstep(0.16, 0.52, min(rlen, 1.0));',
       '    col += vec3(1.0,0.93,0.86) * streak * rr * speedLines * 0.55;',
       '  }',
       '  vec2 o = gTexel * outlineW;',
@@ -28574,6 +28585,7 @@ function rechargeBurst() {
    update
    ============================================================ */
 var _mv = new T.Vector3(), _cr = new T.Vector3(), _pf = new T.Vector3(), _tg = new T.Vector3();
+var _slDir = new T.Vector3(), _slV4 = new T.Vector4();
 var timeScale = 1, dazzle = 0, aimHit = null, fovKick = 0, landHold = 0;
 /* ============================================================
    THE FLOURISH IS RATIONED.
@@ -32159,6 +32171,21 @@ function update(rdt) {
     u.dazzle.value = dazzle * 0.5 + (IN.aiming ? 0.05 : 0);
     var sl = P.flying ? clamp((P.vel.length() - 12) / 22, 0, 1) : clamp((P.vel.length() - 20) / 26, 0, 1);
     u.speedLines.value = damp(u.speedLines.value, sl, 7, rdt);
+    if (sl > 0.004) {
+      /* vanishing point of the travel direction, projected into screen
+         space: dead ahead of the camera it lands near (0.5,0.5) — classic
+         radiating speed lines. Broadside to the camera it is pushed toward
+         (and past) infinity, at which point the same formula degenerates
+         into parallel streaks with no visible centre — see focusUV above. */
+      camera.updateMatrixWorld();
+      _slDir.copy(P.vel).transformDirection(camera.matrixWorldInverse);
+      if (_slDir.z > -0.02) _slDir.z = -0.02;
+      _slV4.set(_slDir.x, _slDir.y, _slDir.z, 0).applyMatrix4(camera.projectionMatrix);
+      var slw = Math.abs(_slV4.w) < 1e-4 ? 1e-4 : _slV4.w;
+      var fu = u.focusUV.value;
+      fu.x = damp(fu.x, clamp(_slV4.x / slw, -6, 6) * 0.5 + 0.5, 6, rdt);
+      fu.y = damp(fu.y, clamp(_slV4.y / slw, -6, 6) * 0.5 + 0.5, 6, rdt);
+    }
     u.grade.value = damp(u.grade.value, IN.aiming ? 0.55 : 1.0, 8, rdt);
   }
 
@@ -32167,9 +32194,13 @@ function update(rdt) {
   elArc.setAttribute('stroke-dashoffset', (213.6 * (1 - gr)).toFixed(1));
   elArc.setAttribute('stroke', gr < 0.25 ? '#ff7a5c' : '#57d8ff');
   elNum.textContent = Math.round(gr * 100);
-  elMode.textContent = P.flying ? 'SHIFT'
+  elMode.textContent = (P.flying ? 'SHIFT'
     : (P.hover ? 'FLOAT'
-    : (P.grounded ? (P.gear && P.vel.lengthSq() > 4 ? 'RUN' : 'WALK') : 'AIR'));
+    : (P.grounded ? (P.gear && P.vel.lengthSq() > 4 ? 'RUN' : 'WALK') : 'AIR')))
+    + ' | v=' + P.vel.length().toFixed(1)
+    + ' sl=' + (POST.matComposite ? POST.matComposite.uniforms.speedLines.value.toFixed(2) : '-')
+    + ' fx=' + (POST.matComposite ? POST.matComposite.uniforms.focusUV.value.x.toFixed(2) : '-')
+    + ' fy=' + (POST.matComposite ? POST.matComposite.uniforms.focusUV.value.y.toFixed(2) : '-');
   updateWaypoint();
   if (areaTimer > 0) { areaTimer -= dt; if (areaTimer <= 0) elArea.classList.remove('on'); }
   if (toastTimer > 0) { toastTimer -= dt; if (toastTimer <= 0) elToast.classList.remove('on'); }
