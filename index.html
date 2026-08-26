@@ -26503,11 +26503,26 @@ function makePost(renderer, scene, camera) {
       '      rb += texture2D(tScene, vUv - rd*tt*0.115*speedLines).rgb;',
       '    }',
       '    col = mix(col, rb/6.0, clamp(speedLines,0.0,1.0)*0.72);',
+      /* a fixed set of angular spokes (not a continuous hash of angle) so the
+         lines read as coherent rays instead of aliasing into fine noise —
+         the earlier per-pixel hash of a continuously-varying angle was
+         indistinguishable from the film grain already covering the screen.
+         Each spoke's on/off and thickness comes from a hash of its integer
+         ID, so it is stable across the whole ray rather than flickering. */
       '    float ang = atan(rdir.y, rdir.x);',
-      '    float nz = fract(sin(ang*97.13)*43758.5453);',
-      '    float streak = smoothstep(0.90, 1.0, fract(nz*3.0 + ang*2.0));',
-      '    float rr = smoothstep(0.16, 0.52, min(rlen, 1.0));',
-      '    col += vec3(1.0,0.93,0.86) * streak * rr * speedLines * 0.55;',
+      '    float spokeF = ang * (90.0 / 6.2831853);',
+      '    float spokeId = floor(spokeF);',
+      '    float spokeFrac = fract(spokeF) - 0.5;',
+      '    float spokeHash = fract(sin(spokeId*12.9898 + 78.233) * 43758.5453);',
+      '    float lineW = mix(0.06, 0.22, fract(spokeHash*7.0));',
+      '    float line = (1.0 - smoothstep(lineW*0.4, lineW, abs(spokeFrac))) * step(0.4, spokeHash);',
+      '    float rr = smoothstep(0.10, 0.46, min(rlen, 1.0));',
+      /* against a bright sky a bright line is invisible and against dark
+         roofs a dark line is invisible — pick the line colour from the
+         background's own luminance so it always shows. */
+      '    float lum = dot(col, vec3(0.299,0.587,0.114));',
+      '    vec3 lineCol = mix(vec3(1.0,0.96,0.9), vec3(0.03,0.02,0.04), smoothstep(0.35,0.7,lum));',
+      '    col = mix(col, lineCol, line * rr * speedLines * 0.8);',
       '  }',
       '  vec2 o = gTexel * outlineW;',
       '  vec4 gC = texture2D(tG, vUv);',
