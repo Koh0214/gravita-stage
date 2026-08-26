@@ -23643,9 +23643,23 @@ Hero.prototype.solveLeg = function (thigh, knee, targetPelvis, poleFwd) {
   return { q: _ikQ, knee: Math.PI - kneeAng };
 };
 
+/* ---- THE STRETCH SIDE WAS ALREADY BEING ASKED FOR, AND NEVER ARRIVED ------
+   doShift's launch and the jump button both already call this with a
+   NEGATIVE number (-6, -9) wanting the opposite of a landing squash — a
+   brace/extend on take-off, out of the same spring. It never happened: the
+   old clamp floored s at 0, so a negative impact fell straight to zero and
+   the call was silently a no-op every single time. The spring underneath
+   (this.squash going below zero, the stretch reading in Hero.update, the
+   -0.24 floor it already bottoms out at) was always there and always
+   correct; only the gate in front of it was wrong. Widened symmetrically,
+   and the "does this kick beat what is already running" test is now taken
+   in whichever direction the kick itself pushes, so a bigger stretch can
+   still overwrite a smaller one in progress the same way a bigger squash
+   already could. */
 Hero.prototype.hit = function (impact) {
-  var s = clamp(impact / 16, 0, 1.15);
-  if (s > this.squash) { this.squash = s; this.squashV = -s * 3.0; }
+  var s = clamp(impact / 16, -1.15, 1.15);
+  if (s >= 0) { if (s > this.squash) { this.squash = s; this.squashV = -s * 3.0; } }
+  else { if (s < this.squash) { this.squash = s; this.squashV = -s * 3.0; } }
 };
 
 /* main animation tick -----------------------------------------
@@ -28436,6 +28450,24 @@ function landOn(normal, impact) {
     hero.hit(impact * 1.15);
     rings.pop(_t2.copy(P.pos).addScaledVector(P.up, -FOOT + 0.1), P.up, 1.9, 0xffe6b0);
     burst(_t2, P.up, 0xffdca0, Math.min(30, 10 + (impact | 0)), 6);
+    /* AND SHE ABSORBS A LITTLE OF IT, NOT ALL OF IT. A heavy arrival that
+       simply keeps every metre a second it came in with reads as passing
+       through the ground rather than meeting it — a few per cent shaved off
+       the speed she is carrying is the knees taking some of the impact,
+       scaled with how hard she came down and capped well short of anything
+       a player would call a slowdown. */
+    P.vel.multiplyScalar(1 - clamp(impact / 45, 0, 0.045));
+  } else if (impact > 0.6) {
+    /* A HOP STILL LANDS, JUST QUIETLY. The stride-hop above and the softer
+       roof-to-roof pops now guarantee SOME vertical speed on the way down
+       even for the gentlest transitions, and arriving at those with the
+       full ceremony above five is too much — but arriving with nothing at
+       all is the "she has kept running" shudder this whole gate exists to
+       stop. This tier is the middle ground: a small hit(), a small burst,
+       no ring, no roll consideration below. */
+    hero.hit(impact * 0.6);
+    burst(_t2.copy(P.pos).addScaledVector(P.up, -FOOT + 0.1), P.up, 0xffdca0, 3, 3);
+    P.vel.multiplyScalar(1 - clamp(impact / 45, 0, 0.045));
   }
   /* A BIG ARRIVAL ALWAYS GETS ITS BEAT; A ROOF-TO-ROOF HOP TAKES ITS TURN.
      Dropping onto the next roof down is a landing, and on a Sienese roofline
@@ -28779,6 +28811,28 @@ var PK = {
 var _pk1 = new T.Vector3(), _pk2 = new T.Vector3(), _pk3 = new T.Vector3();
 /* the fan's own two: _pkH is the ray being tried, _pkBL that ray's landing */
 var _pkH = new T.Vector3(), _pkBL = new T.Vector3();
+/* ---- THE HAND-OVER DOES NOT HAPPEN IN ONE FRAME EITHER -------------------
+   Every one of the automatic gravity reorientations below (catwall, topout,
+   airwall, wallshift, and the wall's own top-out kick) used to hard-assign
+   P.vel the instant P.up flipped: one frame she was running one way, the
+   next frame another, with nothing between them. That is the vertical
+   judder — not a physics bug, a total absence of any transition at all.
+   P.up itself still has to flip on the exact frame gravity does; every
+   ground probe and collision normal in this file assumes it is always the
+   current gravity, so delaying IT would just move the seam somewhere worse.
+   What CAN wait is the number that describes how fast she is going: the
+   target velocity is computed exactly as it always was and parked here,
+   and update() carries P.vel into it over a handful of frames with the
+   same damp() used everywhere else in this file, instead of snapping. */
+var velHandTo = new T.Vector3(), velHandT = 0;
+var VEL_HAND_LAMBDA = 13;   /* fast-ish: converges in well under a quarter second */
+/* ---- AND THE EYE GETS ITS OWN, SEPARATE, PURELY COSMETIC LAG -------------
+   Same complaint, a different fix, because this one is NOT allowed to touch
+   P.up — the drawn body's up is nudged away from the true one by an offset
+   captured at the instant of the flip, and that offset is bled back to zero
+   exactly the way stepBlend is (see its note above): a few frames of visual
+   catch-up laid on top of a P.up that already turned correctly this frame. */
+var upVisOff = new T.Vector3(), _upDraw = new T.Vector3();
 /* WHERE SHE HAS ALREADY STOOD ON A WALL, AND WHEN.
 
    Two facades three metres apart give the cat leap exactly two answers, and
@@ -29287,8 +29341,10 @@ function pkFinish() {
   if (PK.move.n === 'catwall') {
     /* the facing wall becomes the floor, and she keeps running the way she was
        already going — which on a wall is up */
+    upVisOff.copy(P.up);
     P.up.copy(PK.newUp);
     GRAVV.copy(P.up).multiplyScalar(-G_MAG);
+    upVisOff.sub(P.up);   /* the drawn body eases the rest of the way in, not the physics */
     pkFace(PK.newFwd);
     P.pos.copy(PK.p1);
     /* SETTLE UP, THEN DOWN.
@@ -29310,7 +29366,10 @@ function pkFinish() {
     resolveCollisions(P.pos, P.up, RAD);
     pkD('setY', Math.round(P.pos.y * 100) / 100);
     pkD('gp', groundProbe(P.pos, P.up) ? 1 : 0);
-    P.vel.copy(P.fwd).multiplyScalar(keep);
+    /* the run-speed she earned is carried in over a few frames rather than
+       assigned this instant — see the note by velHandTo's declaration */
+    velHandTo.copy(P.fwd).multiplyScalar(keep);
+    velHandT = 0.15;
     P.grounded = true; P.coyote = 0.20;
     PK.wallP0.copy(P.pos);            /* and again on the wall she just caught */
     pkNoteWall(P.pos);
@@ -29324,8 +29383,10 @@ function pkFinish() {
   if (PK.move.n === 'topout') {
     /* the roof becomes down, and she is running away from the edge she just
        came over — the same hand-over as the wall shift, rotated the other way */
+    upVisOff.copy(P.up);
     P.up.copy(PK.newUp);
     GRAVV.copy(P.up).multiplyScalar(-G_MAG);
+    upVisOff.sub(P.up);
     pkFace(PK.newFwd);
     P.pos.copy(PK.p1);
     /* SETTLE UP, THEN DOWN — the same order the cat leap uses. snapDown only
@@ -29372,7 +29433,10 @@ function pkFinish() {
        Measured across the three districts after: Venezia's exit speed 91 per
        cent to 106, and the top-out's own plant and hold unchanged. */
     var lvl = clamp((P.up.y - 0.55) / 0.42, 0, 1);
-    P.vel.copy(P.fwd).multiplyScalar(keep * 0.74).addScaledVector(P.up, 0.66 + 0.78 * lvl);
+    /* the beat's pop and the roof's own run-speed both get carried in over a
+       few frames rather than assigned this instant — see velHandTo's note */
+    velHandTo.copy(P.fwd).multiplyScalar(keep * 0.74).addScaledVector(P.up, 0.66 + 0.78 * lvl);
+    velHandT = 0.16;
     P.grounded = false; P.coyote = 0.14;
     pkFlourish(-2.2, 0.26);
     if (typeof rings !== 'undefined') rings.pop(_pk1.copy(P.pos), P.up, 1.8, 0xffe6b0);
@@ -29386,8 +29450,10 @@ function pkFinish() {
   if (PK.move.n === 'airwall') {
     /* the facade becomes the floor, she keeps whatever she was doing along
        it, and the drop she was carrying goes into the knees */
+    upVisOff.copy(P.up);
     P.up.copy(PK.newUp);
     GRAVV.copy(P.up).multiplyScalar(-G_MAG);
+    upVisOff.sub(P.up);
     pkFace(PK.newFwd);
     P.pos.copy(PK.p1);
     for (var _au = 0; _au < 12; _au++) {
@@ -29396,9 +29462,12 @@ function pkFinish() {
     }
     snapDown(P.pos, P.up, RAD, 1.2);
     resolveCollisions(P.pos, P.up, RAD);
-    P.vel.copy(PK.awVel).addScaledVector(P.up, -PK.awVel.dot(P.up));
-    if (P.vel.lengthSq() > PK_VMAX * PK_VMAX) P.vel.setLength(PK_VMAX);
-    if (P.vel.lengthSq() < WALK_SPD * WALK_SPD) P.vel.copy(P.fwd).multiplyScalar(WALK_SPD);
+    /* built in a scratch, not straight into P.vel, so the fall's carry is
+       handed over over a few frames instead of assigned this instant */
+    _pk1.copy(PK.awVel).addScaledVector(P.up, -PK.awVel.dot(P.up));
+    if (_pk1.lengthSq() > PK_VMAX * PK_VMAX) _pk1.setLength(PK_VMAX);
+    if (_pk1.lengthSq() < WALK_SPD * WALK_SPD) _pk1.copy(P.fwd).multiplyScalar(WALK_SPD);
+    velHandTo.copy(_pk1); velHandT = 0.15;
     P.grounded = true; P.coyote = 0.20;
     PK.wallP0.copy(P.pos); pkNoteWall(P.pos);
     P.gauge = Math.max(0, P.gauge - 3.5);
@@ -29416,6 +29485,7 @@ function pkFinish() {
     var oldUp = _pk2.copy(PK.up);
     P.up.copy(PK.wallN).normalize();
     GRAVV.copy(P.up).multiplyScalar(-G_MAG);
+    upVisOff.copy(oldUp).sub(P.up);   /* oldUp was captured for pkFace anyway */
     /* AND THE CAMERA COMES WITH HER — pkFace does that too, because the pad
        steers by camFwd, not by P.fwd. Leaving the camera behind was the first
        half of why she ran sideways along the facade; reprojectFwd eating the
@@ -29429,7 +29499,8 @@ function pkFinish() {
        it */
     snapDown(P.pos, P.up, RAD, 0.55);
     resolveCollisions(P.pos, P.up, RAD);
-    P.vel.copy(P.fwd).multiplyScalar(keep);
+    velHandTo.copy(P.fwd).multiplyScalar(keep);
+    velHandT = 0.15;
     P.grounded = true; P.coyote = 0.20;
     PK.wallP0.copy(P.pos);            /* the wall run starts here */
     pkNoteWall(P.pos);
@@ -30086,7 +30157,15 @@ var EKT = {
   t1: 7, t2: 9.5,                      /* 5 -> 7: the simple hop covers more */
   v0: 0.88, v1: 1.08, v2: 1.3,
   f0: 1, f1: 1.15, f2: 1.75,          /* f0 0.85 -> 1.0 */
-  h1: 0.1, h2: 0.38, k1: 0.65, k2: 0.2       /* the lightness */
+  h1: 0.1, h2: 0.38, k1: 0.65, k2: 0.2,       /* the lightness */
+  /* NOT ONE OF THE 528. strideHop is new: the EKstride branch below used to
+     return with nothing at all, on purpose, to kill the near-roof shaking —
+     and it went one step too far the other way, because "nothing" reads as
+     sliding across the gap rather than hopping it. This is a first pass by
+     feel, sized well under lvMin (2.4, the smallest of the tiers that
+     actually jump) so a stride can never be mistaken for one of them. It
+     wants its own measurement pass once the owner has seen it land. */
+  strideHop: 1.3
 };
 /* the push-off itself. Called from update() on the frame the ground is lost;
    every one of these tests is about whether this was a roof edge or something
@@ -30146,15 +30225,21 @@ function wallTopKick(mAmt) {
   var vUp = clamp(sp * 0.55 + 3.0, 4.6, 7.6);
   /* the hand-over, quietly: no toast and no flash, because the player did not
      press anything — this is the move completing itself */
+  upVisOff.copy(P.up);
   P.up.set(0, 1, 0);
   GRAVV.set(0, -G_MAG, 0);
+  upVisOff.sub(P.up);
   P.flying = false; P.hover = false; P.flyTarget = null;
   if (typeof elMode !== 'undefined' && elMode) {
     elMode.classList.remove('hover'); elMode.classList.remove('shift');
   }
   reprojectFwd();
-  P.vel.y = vUp;
-  P.vel.addScaledVector(_ekP, 2.2);
+  /* the pop over the lip is handed over the same way the roof-to-roof and
+     wall-to-roof transitions are — see velHandTo's note by its declaration */
+  velHandTo.copy(P.vel);
+  velHandTo.y = vUp;
+  velHandTo.addScaledVector(_ekP, 2.2);
+  velHandT = 0.14;
   P.coyote = 0;
   if (typeof rings !== 'undefined' && rings && rings.pop)
     rings.pop(P.pos, new T.Vector3(0, 1, 0), 2.4, 0x9ae8ff);
@@ -30261,6 +30346,14 @@ function edgeKick(mAmt) {
        than a stride, it is the mantle's. */
     pkD('EKwall', Math.round(aimH * 10) / 10); return;
   } else if (aimH > EKT.strideLo && aimH < EKT.strideHi && aimD < EKT.strideD) {
+    /* A STRIDE IS NOT NOTHING. This used to return here with P.vel entirely
+       untouched — asked for on purpose, because the alternative was every
+       near-level, close-together roof reading as a wall she scrambled up.
+       But zero vertical motion at all reads as sliding across the gap
+       rather than hopping it, so she gets one small guaranteed pop instead:
+       EKT.strideHop, deliberately far under any of the tiers below. */
+    P.vel.addScaledVector(P.up, EKT.strideHop - P.vel.dot(P.up));
+    EK_T = CLOCK;
     pkD('EKstride', Math.round(aimD * 10) / 10); return;    /* it is a stride */
   } else if (aimH >= EKT.strideHi) {
     /* ---- A STEP UP, AND SHE JUMPS ONTO IT --------------------------------
@@ -30318,6 +30411,21 @@ function edgeKick(mAmt) {
   P.vel.addScaledVector(P.up, vUp - P.vel.dot(P.up));
   P.vel.addScaledVector(_ekV, vFw);
   P.coyote = 0;
+  /* ---- SHE BRACES BEFORE SHE LEAVES, IN PROPORTION TO HOW HARD -----------
+     hit() already drives a squash on impact; a negative number now pushes
+     the same spring the other way, into a stretch (see the note by hit()'s
+     declaration — this is the take-off half of what doShift and the jump
+     button were already trying to do). Scaled off vUp rather than off the
+     tier so a gentle 軽く hop barely shows and only the biggest ぐぐぐっ
+     launches reach the spring's own -0.24 floor: 0.4 is a first-pass factor,
+     chosen so the smallest realistic vUp (~4) sits just at the edge of the
+     floor and the largest (~16, tier 2 at upMax) sits well past it. */
+  if (typeof hero !== 'undefined' && hero.hit) hero.hit(-vUp * 0.4);
+  /* AND THE PUSH-OFF COSTS HER A LITTLE OF WHAT SHE HAD. A real launch does
+     not come free — a small, proportional sliver of her existing speed goes
+     into the effort of leaving, same idea as the landing brace below. Kept
+     to a few per cent even at the hardest launch: a garnish, not a penalty. */
+  P.vel.multiplyScalar(1 - clamp(vUp * 0.4 / 16, 0, 1.15) * 0.035);
   EK_HANG = [0, EKT.h1, EKT.h2][tier];
   EK_HANG_K = [1, EKT.k1, EKT.k2][tier];
   if (typeof pkFlourish === 'function')
@@ -31340,6 +31448,24 @@ function update(rdt) {
   timeScale = damp(timeScale, tsT, IN.aiming ? 16 : 9, rdt);
   var dt = rdt * timeScale;
   CLOCK += dt;
+  /* ---- CARRY THE VELOCITY HAND-OVER IN, A FEW FRAMES AT A TIME -----------
+     velHandT counts down; while it is running, P.vel is damped toward the
+     target the transition actually earned rather than having already been
+     set to it. The instant the timer runs out the last sliver of a gap is
+     closed exactly, so a move can never permanently fall short of what it
+     computed just because the catch-up ran out of time to finish it. */
+  if (velHandT > 0) {
+    velHandT = Math.max(0, velHandT - dt);
+    P.vel.x = damp(P.vel.x, velHandTo.x, VEL_HAND_LAMBDA, dt);
+    P.vel.y = damp(P.vel.y, velHandTo.y, VEL_HAND_LAMBDA, dt);
+    P.vel.z = damp(P.vel.z, velHandTo.z, VEL_HAND_LAMBDA, dt);
+    if (velHandT <= 0) P.vel.copy(velHandTo);
+  }
+  /* the visual-only up lag rides on the real clock, the same as stepBlend,
+     so slow-motion does not stretch out how long the eye takes to catch up */
+  upVisOff.x = damp(upVisOff.x, 0, 14, rdt);
+  upVisOff.y = damp(upVisOff.y, 0, 14, rdt);
+  upVisOff.z = damp(upVisOff.z, 0, 14, rdt);
   /* Input timing runs on the WALL clock, not on accumulated frame time.
      rdt is clamped to 0.05, so on a device that drops below 20fps an
      accumulated clock falls behind real time and the double-press window
@@ -31943,6 +32069,19 @@ function update(rdt) {
           }
           hero.hit(rolled ? imp * 0.45 : imp);
           burst(_t2.copy(P.pos).addScaledVector(P.up, -FOOT), P.up, 0xffdcae, Math.min(22, imp | 0), 4);
+          /* the knees take a little of it, same idea and same scale as landOn's */
+          P.vel.multiplyScalar(1 - clamp(imp / 45, 0, 0.045));
+        } else if (imp > 0.6) {
+          /* A HOP STILL LANDS, JUST QUIETLY. This is the ordinary-ground twin
+             of the light tier added to landOn(): landOn only ever fires for
+             a gravity-SHIFT landing, but every roof-to-roof hop (edgeKick's
+             tiers, the EKstride bounce above) comes down through THIS path
+             instead, on plain P.grounded physics. Without a tier here the
+             stride-hop's small guaranteed pop was still landing with zero
+             visual feedback, which was the whole point of adding it. */
+          hero.hit(imp * 0.6);
+          burst(_t2.copy(P.pos).addScaledVector(P.up, -FOOT), P.up, 0xffdcae, 3, 3);
+          P.vel.multiplyScalar(1 - clamp(imp / 45, 0, 0.045));
         }
       }
       P.grounded = true; P.coyote = 0.16; P.groundN.copy(gp);
@@ -32031,8 +32170,12 @@ function update(rdt) {
   /* and the body carries the step-up smoothing too, or she pops up the kerb
      while the camera glides and the two disagree for a fifth of a second */
   _t1.copy(P.pos).addScaledVector(P.up, -FOOT - stepBlend);
+  /* the drawn up is the real one plus whatever is left of the last flip's
+     visual lag — physics never sees this, only the body does */
+  _upDraw.copy(P.up).add(upVisOff);
+  if (_upDraw.lengthSq() < 1e-8) _upDraw.copy(P.up); else _upDraw.normalize();
   hero.update(dt, {
-    footPos: _t1, up: P.up, fwd: P.fwd, vel: P.vel,
+    footPos: _t1, up: _upDraw, fwd: P.fwd, vel: P.vel,
     pk: PK.move ? PK.move : (FT.on ? FT.move : null),
     pkS: PK.move ? PK.s : (FT.on ? FT.s : 0),
     pkTrick: PK.move ? PK.trick : (FT.on ? FT.trick : null),
