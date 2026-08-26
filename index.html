@@ -32209,13 +32209,9 @@ function update(rdt) {
   elArc.setAttribute('stroke-dashoffset', (213.6 * (1 - gr)).toFixed(1));
   elArc.setAttribute('stroke', gr < 0.25 ? '#ff7a5c' : '#57d8ff');
   elNum.textContent = Math.round(gr * 100);
-  elMode.textContent = (P.flying ? 'SHIFT'
+  elMode.textContent = P.flying ? 'SHIFT'
     : (P.hover ? 'FLOAT'
-    : (P.grounded ? (P.gear && P.vel.lengthSq() > 4 ? 'RUN' : 'WALK') : 'AIR')))
-    + ' | v=' + P.vel.length().toFixed(1)
-    + ' sl=' + (POST.matComposite ? POST.matComposite.uniforms.speedLines.value.toFixed(2) : '-')
-    + ' fx=' + (POST.matComposite ? POST.matComposite.uniforms.focusUV.value.x.toFixed(2) : '-')
-    + ' fy=' + (POST.matComposite ? POST.matComposite.uniforms.focusUV.value.y.toFixed(2) : '-');
+    : (P.grounded ? (P.gear && P.vel.lengthSq() > 4 ? 'RUN' : 'WALK') : 'AIR'));
   updateWaypoint();
   if (areaTimer > 0) { areaTimer -= dt; if (areaTimer <= 0) elArea.classList.remove('on'); }
   if (toastTimer > 0) { toastTimer -= dt; if (toastTimer <= 0) elToast.classList.remove('on'); }
