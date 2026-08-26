@@ -28825,7 +28825,7 @@ var _pkH = new T.Vector3(), _pkBL = new T.Vector3();
    and update() carries P.vel into it over a handful of frames with the
    same damp() used everywhere else in this file, instead of snapping. */
 var velHandTo = new T.Vector3(), velHandT = 0;
-var VEL_HAND_LAMBDA = 13;   /* fast-ish: converges in well under a quarter second */
+var VEL_HAND_LAMBDA = 8;   /* slower than the first pass — 13 converged so fast it barely read as a catch-up at all */
 /* ---- AND THE EYE GETS ITS OWN, SEPARATE, PURELY COSMETIC LAG -------------
    Same complaint, a different fix, because this one is NOT allowed to touch
    P.up — the drawn body's up is nudged away from the true one by an offset
@@ -29369,7 +29369,7 @@ function pkFinish() {
     /* the run-speed she earned is carried in over a few frames rather than
        assigned this instant — see the note by velHandTo's declaration */
     velHandTo.copy(P.fwd).multiplyScalar(keep);
-    velHandT = 0.15;
+    velHandT = 0.22;
     P.grounded = true; P.coyote = 0.20;
     PK.wallP0.copy(P.pos);            /* and again on the wall she just caught */
     pkNoteWall(P.pos);
@@ -29436,7 +29436,7 @@ function pkFinish() {
     /* the beat's pop and the roof's own run-speed both get carried in over a
        few frames rather than assigned this instant — see velHandTo's note */
     velHandTo.copy(P.fwd).multiplyScalar(keep * 0.74).addScaledVector(P.up, 0.66 + 0.78 * lvl);
-    velHandT = 0.16;
+    velHandT = 0.24;
     P.grounded = false; P.coyote = 0.14;
     pkFlourish(-2.2, 0.26);
     if (typeof rings !== 'undefined') rings.pop(_pk1.copy(P.pos), P.up, 1.8, 0xffe6b0);
@@ -29467,7 +29467,7 @@ function pkFinish() {
     _pk1.copy(PK.awVel).addScaledVector(P.up, -PK.awVel.dot(P.up));
     if (_pk1.lengthSq() > PK_VMAX * PK_VMAX) _pk1.setLength(PK_VMAX);
     if (_pk1.lengthSq() < WALK_SPD * WALK_SPD) _pk1.copy(P.fwd).multiplyScalar(WALK_SPD);
-    velHandTo.copy(_pk1); velHandT = 0.15;
+    velHandTo.copy(_pk1); velHandT = 0.22;
     P.grounded = true; P.coyote = 0.20;
     PK.wallP0.copy(P.pos); pkNoteWall(P.pos);
     P.gauge = Math.max(0, P.gauge - 3.5);
@@ -29500,7 +29500,7 @@ function pkFinish() {
     snapDown(P.pos, P.up, RAD, 0.55);
     resolveCollisions(P.pos, P.up, RAD);
     velHandTo.copy(P.fwd).multiplyScalar(keep);
-    velHandT = 0.15;
+    velHandT = 0.22;
     P.grounded = true; P.coyote = 0.20;
     PK.wallP0.copy(P.pos);            /* the wall run starts here */
     pkNoteWall(P.pos);
@@ -30239,7 +30239,7 @@ function wallTopKick(mAmt) {
   velHandTo.copy(P.vel);
   velHandTo.y = vUp;
   velHandTo.addScaledVector(_ekP, 2.2);
-  velHandT = 0.14;
+  velHandT = 0.20;
   P.coyote = 0;
   if (typeof rings !== 'undefined' && rings && rings.pop)
     rings.pop(P.pos, new T.Vector3(0, 1, 0), 2.4, 0x9ae8ff);
@@ -31463,9 +31463,9 @@ function update(rdt) {
   }
   /* the visual-only up lag rides on the real clock, the same as stepBlend,
      so slow-motion does not stretch out how long the eye takes to catch up */
-  upVisOff.x = damp(upVisOff.x, 0, 14, rdt);
-  upVisOff.y = damp(upVisOff.y, 0, 14, rdt);
-  upVisOff.z = damp(upVisOff.z, 0, 14, rdt);
+  upVisOff.x = damp(upVisOff.x, 0, 9, rdt);
+  upVisOff.y = damp(upVisOff.y, 0, 9, rdt);
+  upVisOff.z = damp(upVisOff.z, 0, 9, rdt);
   /* Input timing runs on the WALL clock, not on accumulated frame time.
      rdt is clamped to 0.05, so on a device that drops below 20fps an
      accumulated clock falls behind real time and the double-press window
@@ -31739,7 +31739,13 @@ function update(rdt) {
       _t1.copy(_mv).multiplyScalar(P.gear ? RUN_SPD : WALK_SPD);
       _t2.copy(P.vel).addScaledVector(P.up, -P.vel.dot(P.up));         // tangential velocity
       _t3.copy(_t1).sub(_t2);
-      var acc = Math.min(MOVE_ACC * dt, _t3.length());
+      /* WHILE A HAND-OVER IS STILL SETTLING, THIS DOES NOT GET TO WIN. Left
+         at its ordinary strength this snapped the tangential speed to the
+         gear's target inside a couple of frames — faster than velHandTo's
+         own damp — so the hand-over's carry-in was being overwritten by this
+         before it ever got to show. Throttled for exactly the window
+         velHandT is running, then back to full strength once it is not. */
+      var acc = Math.min((velHandT > 0 ? MOVE_ACC * 0.3 : MOVE_ACC) * dt, _t3.length());
       if (_t3.lengthSq() > 1e-8) P.vel.addScaledVector(_t3.normalize(), acc);
       if (mAmt < 0.08) {                                               // friction
         _t2.copy(P.vel).addScaledVector(P.up, -P.vel.dot(P.up));
@@ -32327,7 +32333,11 @@ function update(rdt) {
   if (POST.matComposite) {
     var u = POST.matComposite.uniforms;
     u.dazzle.value = dazzle * 0.5 + (IN.aiming ? 0.05 : 0);
-    var sl = P.flying ? clamp((P.vel.length() - 12) / 22, 0, 1) : clamp((P.vel.length() - 20) / 26, 0, 1);
+    /* gravity-flight only, and dialled to a tenth of what it was: at full
+       strength this was reading over ordinary running and falling too, which
+       was never the ask — it is meant to mark the one specific state where
+       she has taken gravity into her own hands. */
+    var sl = P.flying ? clamp((P.vel.length() - 12) / 22, 0, 1) * 0.1 : 0;
     u.speedLines.value = damp(u.speedLines.value, sl, 7, rdt);
     if (sl > 0.004) {
       /* vanishing point of the travel direction, projected into screen
