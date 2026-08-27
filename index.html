@@ -30354,6 +30354,8 @@ function edgeKick(mAmt) {
        EKT.strideHop, deliberately far under any of the tiers below. */
     P.vel.addScaledVector(P.up, EKT.strideHop - P.vel.dot(P.up));
     EK_T = CLOCK;
+    if (typeof burst === 'function')
+      burst(_ekP.copy(P.pos).addScaledVector(P.up, -FOOT), P.up, 0xcfefff, 5, 2.5);
     pkD('EKstride', Math.round(aimD * 10) / 10); return;    /* it is a stride */
   } else if (aimH >= EKT.strideHi) {
     /* ---- A STEP UP, AND SHE JUMPS ONTO IT --------------------------------
@@ -30430,6 +30432,24 @@ function edgeKick(mAmt) {
   EK_HANG_K = [1, EKT.k1, EKT.k2][tier];
   if (typeof pkFlourish === 'function')
     pkFlourish(Math.min(4.2, [0.6, 1.5, 2.8][tier] + sp * 0.09), [0, 0.06, 0.16][tier]);
+  /* ---- しゅっ、と踏み切る瞬間の光 -----------------------------------------
+     The owner: 忍者のようにぴょんぴょん、しゅっ、と飛び移る感じ / たまに重力を
+     軽くする感じで一瞬溜めて光って、ぴょーんと遠くに飛んでもいい.
+     Every take-off now pops a small burst of its own colour, sized with the
+     tier the same way the push and the camera kick already are. Tier 2 is the
+     one that visibly goes light (EK_HANG_K above cuts gravity for a chunk of
+     the flight that follows) so it also gets the dazzle rim-glow doShift uses
+     for its own gravity moment, plus a ring, rather than a bigger version of
+     the same burst — the glow reads as the lightness, not as a harder push. */
+  var EK_POP_COL = [0xcfefff, 0xbfe8ff, 0xaef2ff][tier];
+  if (typeof burst === 'function')
+    burst(_ekP.copy(P.pos).addScaledVector(P.up, -FOOT), P.up, EK_POP_COL,
+      [5, 11, 20][tier], [2.5, 4, 6][tier]);
+  if (tier === 2) {
+    if (typeof rings !== 'undefined' && rings && rings.pop)
+      rings.pop(P.pos, P.up, 2.2, 0xaef2ff);
+    dazzle = Math.max(dazzle, 0.55);
+  }
   /* ---- 距離で「何をするか」が変わる --------------------------------------
      さっと飛ぶ時はシンプルジャンプ / ちょっと距離ある時は前宙返りや後ろ宙返り /
      距離があって普通のジャンプじゃ到底届かないときは「ぐっっ」と溜めて一瞬
